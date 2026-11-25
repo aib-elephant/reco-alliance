@@ -316,6 +316,14 @@ const ImportScreen = () => {
                         <span className="text-sm font-medium text-slate-900">
                           {job.attachmentName}
                         </span>
+                        {job.tableCount ? (
+                          <Link
+                            className="text-xs text-blue-700 underline"
+                            href={`/imports/${job._id}`}
+                          >
+                            View original table
+                          </Link>
+                        ) : null}
                       </div>
                     </td>
 
@@ -357,6 +365,15 @@ const ImportScreen = () => {
                           <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
                           Draft
                         </span>
+                      )}
+                    </td>
+
+                    <td className="py-3.5 pl-3 pr-4 sm:pr-6 whitespace-nowrap text-sm font-medium">
+                      {job.successfulRows}/{job.totalRows} mapped
+                      {job.savedTableRows !== undefined && (
+                        <div className="text-xs font-normal text-slate-500">
+                          {job.savedTableRows} source rows
+                        </div>
                       )}
                     </td>
 

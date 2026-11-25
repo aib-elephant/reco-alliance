@@ -22,6 +22,8 @@ export type Job = {
   totalRows: number;
   successfulRows: number;
   failedRows: number;
+  savedTableRows: number;
+  tableCount: number;
 };
 
 export type CreateMappedField = {

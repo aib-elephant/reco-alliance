@@ -1,5 +1,5 @@
 {
-  "name": "data-reconsiliation-solution",
+  "name": "data-reconciliation-solution",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "inngest:dev": "npx inngest-cli@latest dev -u http://localhost:3000/api/inngest",
-    "test:email": "node --experimental-strip-types --test tests/email-utils.test.mjs"
+    "test:email": "node --experimental-strip-types --test tests/email-utils.test.mjs",
+    "test:import": "node --experimental-strip-types --test tests/import-first-table.test.mjs"
   },
   "dependencies": {
     "@azure/msal-node": "^7.1.2",
