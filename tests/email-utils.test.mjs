@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { encryptCredentials, decryptCredentials } from '../lib/email/crypto.ts';
-import { isSupportedAttachment, assertAttachmentSize, decodeBase64Url } from '../lib/email/attachment.service.ts';
+import { encryptCredentials, decryptCredentials, encryptAttachment, decryptAttachment } from '../lib/email/crypto.ts';
+import { isSupportedAttachment, assertAttachmentSize, decodeBase64Url, findAttachmentForRetry } from '../lib/email/attachment.service.ts';
 
 test('supported spreadsheet attachment formats', () => {
   assert.equal(isSupportedAttachment('Sales.CSV'), true);
@@ -58,4 +58,28 @@ test('unknown senders are not assigned a company', () => {
     { id: 'a', senderEmails: ['billing@vendor.com'] },
   ]);
   assert.equal(outcome.status, 'unmatched');
+});
+
+
+test('encrypted attachment survives review retry and rejects tampering', () => {
+  process.env.MAILBOX_ENCRYPTION_KEY = randomBytes(32).toString('hex');
+  const original = randomBytes(256 * 1024);
+  const encrypted = encryptAttachment(original);
+  assert.equal(encrypted.ciphertext.equals(original), false);
+  assert.deepEqual(decryptAttachment(encrypted), original);
+  const corrupted = { ...encrypted, ciphertext: Buffer.from(encrypted.ciphertext) };
+  corrupted.ciphertext[0] ^= 1;
+  assert.throws(() => decryptAttachment(corrupted));
+});
+
+test('retry attachment lookup handles changed IDs without picking duplicate filenames', () => {
+  const attachments = [
+    { id: 'new-1', name: 'invoice.xlsx' },
+    { id: 'new-2', name: 'other.xlsx' },
+  ];
+  assert.equal(findAttachmentForRetry(attachments, { id: 'old-id', name: 'INVOICE.xlsx' }), attachments[0]);
+  assert.equal(findAttachmentForRetry(attachments, { id: 'new-2', name: 'incorrect.xlsx' }), attachments[1]);
+  assert.equal(findAttachmentForRetry([...attachments, { id: 'new-3', name: 'invoice.xlsx' }],
+    { id: 'old-id', name: 'invoice.xlsx' }), undefined);
+  assert.equal(findAttachmentForRetry(attachments, { id: 'old-id', name: 'missing.xlsx' }), undefined);
 });

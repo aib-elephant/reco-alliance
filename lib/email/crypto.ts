@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
 
 function encryptionKey(): Buffer {
   const value = process.env.MAILBOX_ENCRYPTION_KEY;
@@ -33,4 +33,29 @@ export function decryptCredentials<T>(value: string): T {
     decipher.update(Buffer.from(ciphertext, "base64url")),
     decipher.final(),
   ]).toString("utf8")) as T;
+}
+
+
+/** Encrypt spreadsheet bytes separately from OAuth credentials (AES-256-GCM). */
+export function encryptAttachment(buffer: Buffer): {
+  iv: Buffer;
+  authTag: Buffer;
+  ciphertext: Buffer;
+} {
+  const iv = randomBytes(12);
+  const key = Buffer.from(hkdfSync("sha256", encryptionKey(), "drs-email-attachments", "v1", 32));
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(buffer), cipher.final()]);
+  return { iv, authTag: cipher.getAuthTag(), ciphertext };
+}
+
+export function decryptAttachment(value: {
+  iv: Buffer;
+  authTag: Buffer;
+  ciphertext: Buffer;
+}): Buffer {
+  const key = Buffer.from(hkdfSync("sha256", encryptionKey(), "drs-email-attachments", "v1", 32));
+  const decipher = createDecipheriv("aes-256-gcm", key, value.iv);
+  decipher.setAuthTag(value.authTag);
+  return Buffer.concat([decipher.update(value.ciphertext), decipher.final()]);
 }

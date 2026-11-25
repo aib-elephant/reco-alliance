@@ -5,7 +5,12 @@ import { ProcessedEmail } from "@/models/ProcessedEmail";
 import { ImportJob } from "@/models/ImportJob";
 import { MappingConfig } from "@/models/MappingConfig";
 import { resolveCompany } from "./company-resolver";
-import { assertAttachmentSize } from "./attachment.service";
+import { assertAttachmentSize, findAttachmentForRetry } from "./attachment.service";
+import {
+  saveAttachmentForRetry,
+  readAttachmentForRetry,
+  clearAttachmentForRetry,
+} from "./attachment-cache";
 import { createImportJob } from "@/lib/ingestion/create-import-job";
 import { processBufferImport } from "@/lib/ingestion/process-import";
 import {
@@ -101,8 +106,14 @@ async function ingestAttachment(
   );
   if (!claimed) return "skipped" as const;
   try {
-    const buffer = await attachment.download();
+    // A review retry must use the exact original workbook. Provider attachment
+    // identifiers can change; downloading again is only a legacy fallback.
+    const cached = existingJobId
+      ? await readAttachmentForRetry(String(job._id))
+      : null;
+    const buffer = cached ?? (await attachment.download());
     assertAttachmentSize(buffer);
+    if (!cached) await saveAttachmentForRetry(String(job._id), buffer);
     const result = await processBufferImport({
       companyId,
       documentType: claimed.documentType,
@@ -117,6 +128,14 @@ async function ingestAttachment(
         attachmentId: attachment.id,
       },
     });
+    if (result.status === "completed" || result.status === "partially_completed") {
+      // Cleanup failure must not turn a successfully imported job into failed.
+      try {
+        await clearAttachmentForRetry(String(job._id));
+      } catch (error) {
+        console.error("Could not delete temporary email attachment", error);
+      }
+    }
     return result.status === "mapping_review_required"
       ? ("needsReview" as const)
       : result.status === "failed"
@@ -202,7 +221,7 @@ async function scanMessage(
   await markMessageStatus(String(processed._id));
 }
 
-/** Re-fetch from the provider after a mapping was approved; raw attachments aren't stored. */
+/** Retry with the encrypted cached file; fall back to provider for older jobs. */
 export async function retryImportJob(importJobId: string) {
   await connectDB();
   if (!Types.ObjectId.isValid(importJobId))
@@ -212,21 +231,60 @@ export async function retryImportJob(importJobId: string) {
     throw new Error("Email import not found");
   if (!["failed", "needs_review", "queued"].includes(job.status))
     return { status: job.status, skipped: true };
-  const connection = (await EmailConnection.findOne({
-    provider: job.provider,
-    mailboxAddress: job.mailboxAddress,
-    status: "active",
-  }).select("+encryptedCredentials")) as StoredConnection | null;
-  if (!connection) throw new Error("No active mailbox connection is available");
-  const message = await providerAdapters(connection).get(
-    connection,
-    job.providerMessageId,
-  );
-  const attachment = message.attachments.find(
-    (item) => item.id === job.attachmentId,
-  );
-  if (!attachment)
-    throw new Error("Attachment is no longer available at the provider");
+  const cached = await readAttachmentForRetry(String(job._id));
+  let connection: StoredConnection;
+  let message: MailMessage;
+  let attachment: MailAttachment;
+
+  if (cached) {
+    // The cached file can be imported even if the email was moved/deleted
+    // or the connected mailbox now needs reauthorization.
+    connection = {
+      _id: job._id,
+      provider: job.provider as MailProvider,
+      mailboxAddress: job.mailboxAddress,
+      documentType: job.documentType,
+      status: "active",
+    };
+    attachment = {
+      id: job.attachmentId,
+      name: job.attachmentName,
+      size: cached.length,
+      download: async () => cached,
+    };
+    message = {
+      id: job.providerMessageId,
+      sender: "",
+      subject: "",
+      receivedAt: new Date(),
+      attachments: [attachment],
+    };
+  } else {
+    // Old review jobs do not have a local copy. Refetch once, using a unique
+    // filename as a fallback when the provider changed the attachment ID.
+    const active = (await EmailConnection.findOne({
+      provider: job.provider,
+      mailboxAddress: job.mailboxAddress,
+      status: "active",
+    }).select("+encryptedCredentials")) as StoredConnection | null;
+    if (!active) throw new Error("No active mailbox connection is available");
+    connection = active;
+    message = await providerAdapters(connection).get(
+      connection,
+      job.providerMessageId,
+    );
+    const found = findAttachmentForRetry(message.attachments, {
+      id: job.attachmentId,
+      name: job.attachmentName,
+    });
+    if (!found) {
+      throw new Error(
+        "Original attachment could not be located. This job predates local " +
+          "attachment caching; resend the email or upload the file manually.",
+      );
+    }
+    attachment = found;
+  }
   const result = await ingestAttachment(
     connection,
     String(job.processedEmailId),

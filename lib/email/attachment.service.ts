@@ -14,3 +14,18 @@ export function assertAttachmentSize(buffer: Buffer): void {
 export function decodeBase64Url(value: string): Buffer {
   return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
+
+/** Older jobs may have a stale provider attachment ID. Only use a filename
+ * fallback if it identifies exactly one supported attachment in the message. */
+export function findAttachmentForRetry<T extends { id: string; name: string }>(
+  attachments: T[],
+  original: { id: string; name: string },
+): T | undefined {
+  const exact = attachments.find((attachment) => attachment.id === original.id);
+  if (exact) return exact;
+  const sameName = attachments.filter(
+    (attachment) =>
+      attachment.name.toLowerCase() === original.name.toLowerCase(),
+  );
+  return sameName.length === 1 ? sameName[0] : undefined;
+}
