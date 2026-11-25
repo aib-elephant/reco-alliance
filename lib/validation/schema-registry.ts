@@ -19,9 +19,19 @@ const schemas: Record<string, z.ZodTypeAny> = { invoice: InvoiceSchema };
 export function validateNormalizedRecord(
   documentType: string,
   value: Record<string, unknown>,
+  options: { mappedFields?: string[] } = {},
 ) {
-  const schema = schemas[documentType.trim().toLowerCase()];
-  // Unknown document types use configured required fields in the mapping,
-  // rather than failing every row simply because no custom schema exists.
-  return schema ? (schema.parse(value) as Record<string, unknown>) : value;
+  const type = documentType.trim().toLowerCase();
+  const schema = schemas[type];
+  if (!schema) return value;
+
+  // This legacy schema only applies to the exact co-insurance invoice format.
+  // An invoice report with different columns must use its approved per-file
+  // requiredFields rules rather than rejecting every row as a schema mismatch.
+  if (type === "invoice") {
+    const requiredSchemaFields = Object.keys(InvoiceSchema.shape);
+    const mapped = new Set(options.mappedFields ?? Object.keys(value));
+    if (!requiredSchemaFields.every((field) => mapped.has(field))) return value;
+  }
+  return schema.parse(value) as Record<string, unknown>;
 }

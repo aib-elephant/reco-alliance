@@ -4,12 +4,27 @@ import Company from "@/models/Company";
 import { MappingConfig } from "@/models/MappingConfig";
 import { ImportJob } from "@/models/ImportJob";
 import { ImportedRecord } from "@/models/ImportedRecord";
-import { parseCsv } from "@/lib/parsers/csv.parser";
-import { parseExcel } from "@/lib/parsers/excel.parser";
+import { ImportedTable } from "@/models/ImportedTable";
+import { ImportedTableRow } from "@/models/ImportedTableRow";
+import { parseCsvTables } from "@/lib/parsers/csv.parser";
+import { parseExcelTables } from "@/lib/parsers/excel.parser";
+import type { ParsedTable } from "@/lib/parsers/table-utils";
 import { mapRow, validateRequiredFields } from "@/lib/mapping/mapping-engine";
 import { normalizeValues } from "@/lib/validation/normalize-values";
 import { validateNormalizedRecord } from "@/lib/validation/schema-registry";
 import { resolveMapping } from "@/lib/import/mapping-resolver";
+
+/** Bounded batches keep large workbooks from producing huge MongoDB bulk writes. */
+async function writeInBatches(
+  model: typeof ImportedTableRow | typeof ImportedRecord,
+  operations: any[],
+) {
+  for (let start = 0; start < operations.length; start += 500) {
+    await model.bulkWrite(operations.slice(start, start + 500), {
+      ordered: false,
+    });
+  }
+}
 
 export async function processBufferImport(input: {
   companyId: string;
@@ -67,7 +82,6 @@ export async function processBufferImport(input: {
     companyId: company._id,
     status: "active",
   });
-
   if (!mapping) throw new Error("Approved mapping is no longer available");
 
   const mappings =
@@ -75,20 +89,15 @@ export async function processBufferImport(input: {
       ? Object.fromEntries(mapping.columnMappings)
       : (mapping.columnMappings as Record<string, string[]>);
 
-  const sheets =
+  const tables: ParsedTable[] =
     extension === "csv"
-      ? [
-          {
-            sheetName: undefined,
-            rows: parseCsv(input.buffer, {
-              delimiter: mapping.fileRules?.delimiter,
-              headerRow: mapping.fileRules?.headerRow,
-              dataStartRow: mapping.fileRules?.dataStartRow,
-              stopAtLabels: mapping.fileRules?.stopAtLabels,
-            }),
-          },
-        ]
-      : await parseExcel(input.buffer, {
+      ? parseCsvTables(input.buffer, {
+          delimiter: mapping.fileRules?.delimiter,
+          headerRow: mapping.fileRules?.headerRow,
+          dataStartRow: mapping.fileRules?.dataStartRow,
+          stopAtLabels: mapping.fileRules?.stopAtLabels,
+        })
+      : await parseExcelTables(input.buffer, {
           headerRow: mapping.fileRules?.headerRow ?? 1,
           sheetName: mapping.fileRules?.sheetName,
           dataStartRow: mapping.fileRules?.dataStartRow,
@@ -114,7 +123,7 @@ export async function processBufferImport(input: {
     ? await ImportJob.findByIdAndUpdate(
         input.source.importJobId,
         { $set: jobData },
-        { returnDocument: "after" },
+        { new: true },
       )
     : await ImportJob.create(jobData);
   if (!job) throw new Error("Import job does not exist");
@@ -122,16 +131,74 @@ export async function processBufferImport(input: {
   let totalRows = 0;
   let successfulRows = 0;
   let failedRows = 0;
+  let savedTableRows = 0;
   const errors: { rowNumber: number; message: string; field?: string }[] = [];
 
-  for (const sheet of sheets) {
-    const operations = [];
+  // Persist only the first source table. Its totals remain as raw source rows,
+  // while only invoice detail rows become canonical ImportedRecord documents.
+  if (tables.length !== 1) {
+    throw new Error("Parser must return exactly the first source table");
+  }
+  const mappedSheet =
+    mapping.fileRules?.sheetName ??
+    (extension === "csv" ? "CSV" : tables[0]?.sheetName);
+  const mappedHeaderRow = mapping.fileRules?.headerRow ?? 1;
+  const mappedTable = tables.find(
+    (table) =>
+      table.sheetName === mappedSheet && table.headerRow === mappedHeaderRow,
+  );
+  if (!mappedTable)
+    throw new Error("Could not find the table matching the approved mapping");
 
-    for (let index = 0; index < sheet.rows.length; index++) {
+  for (const table of tables) {
+    const stored = await ImportedTable.findOneAndUpdate(
+      {
+        importJobId: job._id,
+        sheetName: table.sheetName,
+        tableIndex: table.tableIndex,
+      },
+      {
+        $set: {
+          companyId: company._id,
+          documentType: input.documentType.toLowerCase(),
+          headerRow: table.headerRow,
+          headers: table.headers,
+          rowCount: table.rows.length,
+        },
+      },
+      { new: true, upsert: true },
+    );
+
+    const rawOperations = table.rows.map((row) => ({
+      updateOne: {
+        filter: {
+          importJobId: job._id,
+          sheetName: table.sheetName,
+          tableIndex: table.tableIndex,
+          rowNumber: row.rowNumber,
+        },
+        update: {
+          $set: {
+            companyId: company._id,
+            tableId: stored._id,
+            rowType: row.rowType,
+            rawData: row.rawData,
+          },
+        },
+        upsert: true,
+      },
+    }));
+    await writeInBatches(ImportedTableRow, rawOperations);
+    savedTableRows += rawOperations.length;
+
+    if (table !== mappedTable) continue;
+
+    const normalizedOperations: any[] = [];
+    for (const row of table.rows) {
+      if (row.rowType !== "detail") continue;
       totalRows++;
-      const rowNumber = index + (mapping.fileRules?.dataStartRow ?? 2);
       try {
-        const mapped = normalizeValues(mapRow(sheet.rows[index], mappings));
+        const mapped = normalizeValues(mapRow(row.effectiveData, mappings));
         const missing = validateRequiredFields(
           mapped,
           mapping.requiredFields ?? [],
@@ -139,29 +206,34 @@ export async function processBufferImport(input: {
         if (missing.length) {
           throw new Error(`Missing required fields: ${missing.join(", ")}`);
         }
-
         const normalizedData = validateNormalizedRecord(
           input.documentType,
           mapped,
+          {
+            mappedFields: Object.keys(mappings),
+          },
         );
-        operations.push({
+        normalizedOperations.push({
           updateOne: {
             filter: {
               importJobId: job._id,
-              "source.sheetName": sheet.sheetName,
-              "source.rowNumber": rowNumber,
+              "source.sheetName": table.sheetName,
+              "source.tableIndex": table.tableIndex,
+              "source.rowNumber": row.rowNumber,
             },
             update: {
               $set: {
                 companyId: company._id,
                 documentType: input.documentType.toLowerCase(),
                 normalizedData,
+                rawData: row.rawData,
                 mappingVersion: mapping.version,
                 source: {
                   providerMessageId: input.source?.providerMessageId,
                   attachmentName: input.fileName,
-                  sheetName: sheet.sheetName,
-                  rowNumber,
+                  sheetName: table.sheetName,
+                  tableIndex: table.tableIndex,
+                  rowNumber: row.rowNumber,
                   attachmentSha256: job.attachmentSha256,
                 },
               },
@@ -172,30 +244,29 @@ export async function processBufferImport(input: {
       } catch (error) {
         failedRows++;
         errors.push({
-          rowNumber,
+          rowNumber: row.rowNumber,
           message: error instanceof Error ? error.message : "Invalid row",
         });
       }
     }
-
-    if (operations.length) {
-      await ImportedRecord.bulkWrite(operations, { ordered: false });
-      successfulRows += operations.length;
-    }
+    await writeInBatches(ImportedRecord, normalizedOperations);
+    successfulRows += normalizedOperations.length;
   }
 
   const status =
-    failedRows === 0
+    failedRows === 0 && totalRows > 0
       ? "completed"
       : successfulRows > 0
         ? "partially_completed"
         : "failed";
 
   await ImportJob.findByIdAndUpdate(job._id, {
+    tableCount: tables.length,
+    savedTableRows,
     totalRows,
     successfulRows,
     failedRows,
-    importErrors: errors.slice(0, 500),
+    errors: errors.slice(0, 500),
     status,
     completedAt: new Date(),
   });
@@ -204,10 +275,12 @@ export async function processBufferImport(input: {
     importId: job._id.toString(),
     companyId: company._id.toString(),
     documentType: input.documentType,
+    tableCount: tables.length,
+    savedTableRows,
     totalRows,
     successfulRows,
     failedRows,
     status,
-    importErrors: errors.slice(0, 100),
+    errors: errors.slice(0, 100),
   };
 }

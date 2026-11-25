@@ -20,10 +20,10 @@ export type Job = {
   documentType: string;
   status: string;
   totalRows: number;
+  tableCount?: number;
+  savedTableRows?: number;
   successfulRows: number;
   failedRows: number;
-  savedTableRows: number;
-  tableCount: number;
 };
 
 export type CreateMappedField = {

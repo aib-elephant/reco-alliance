@@ -31,6 +31,8 @@ const ImportJobSchema = new Schema(
       index: true,
     },
     attempts: { type: Number, default: 0 },
+    tableCount: { type: Number, default: 0 },
+    savedTableRows: { type: Number, default: 0 },
     totalRows: { type: Number, default: 0 },
     successfulRows: { type: Number, default: 0 },
     failedRows: { type: Number, default: 0 },

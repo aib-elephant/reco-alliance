@@ -173,7 +173,10 @@ export async function resolveMapping(input: {
     columnMappings: suggestions,
     requiredFields:
       previousMappings[0]?.requiredFields ??
-      (documentType === "invoice"
+      (documentType === "invoice" &&
+      detected.headers.some(
+        (header) => normalizeHeader(header) === "policynumber",
+      )
         ? [
             "Policy Number",
             "Share Premium",
