@@ -2,13 +2,17 @@ import { createHash } from "node:crypto";
 import { connectDB } from "@/lib/db/mongoose";
 import Company from "@/models/Company";
 import { MappingConfig } from "@/models/MappingConfig";
+import { MappedKey } from "@/models/KeyMapping";
 import { ImportJob } from "@/models/ImportJob";
 import { ImportedRecord } from "@/models/ImportedRecord";
 import { ImportedTable } from "@/models/ImportedTable";
 import { ImportedTableRow } from "@/models/ImportedTableRow";
 import { parseCsvTables } from "@/lib/parsers/csv.parser";
 import { parseExcelTables } from "@/lib/parsers/excel.parser";
-import { rowsWithPolicyNumber, type ParsedTable } from "@/lib/parsers/table-utils";
+import {
+  rowsWithPolicyNumber,
+  type ParsedTable,
+} from "@/lib/parsers/table-utils";
 import { mapRow, validateRequiredFields } from "@/lib/mapping/mapping-engine";
 import { normalizeValues } from "@/lib/validation/normalize-values";
 import { validateNormalizedRecord } from "@/lib/validation/schema-registry";
@@ -150,11 +154,24 @@ export async function processBufferImport(input: {
   if (!mappedTable)
     throw new Error("Could not find the table matching the approved mapping");
 
+  // The Key Mapper is a global alias dictionary. The approved per-company
+  // mapping takes priority; these aliases only handle older/unmapped layouts.
+  const policyKeys = await MappedKey.find({
+    source_field: /^\s*policy[\s_-]*(?:number|no\.?)\s*$/i,
+  })
+    .select("mapped_columns")
+    .lean();
+  const keyMapperAliases = policyKeys.flatMap(
+    (key) => key.mapped_columns ?? [],
+  );
+
   for (const table of tables) {
-    // For policy reports, omit subtotal/grand-total rows and lines without a
-    // Policy Number, while keeping all original columns in each retained row.
-    // Other report formats keep the previous behavior.
-    const rowsToStore = rowsWithPolicyNumber(table);
+    // Preserve every original column of each retained detail row. Both email
+    // attachments and manual uploads use this same approved mapping / alias rule.
+    const rowsToStore = rowsWithPolicyNumber(table, {
+      approvedMappings: mappings,
+      keyMapperAliases,
+    });
     const stored = await ImportedTable.findOneAndUpdate(
       {
         importJobId: job._id,

@@ -17,17 +17,79 @@ export type ParsedTable = {
 };
 
 /**
- * A report with a Policy Number column can contain subtotal rows and empty
- * separator rows. Keep only actual policy details in imported/stored rows.
+ * Resolve the first table's policy identifier from the approved mapping.
+ * The Key Mapper provides fallback aliases for older mappings, and the original
+ * header spellings remain compatible with imports that have no mapping context.
  *
- * Other report layouts have no change in behavior. The original first-table
- * boundary (Grand Total / next header) is detected BEFORE this filter.
+ * Do not guess between multiple Key Mapper matches: choosing the wrong column
+ * could silently drop valid policy rows.
  */
-export function rowsWithPolicyNumber(table: ParsedTable): SourceTableRow[] {
-  const policyHeader = table.headers.find((header) => {
-    const key = header.toLowerCase().replace(/[^a-z0-9]/g, "");
-    return key === "policynumber" || key === "policyno";
-  });
+export type PolicyColumnSources = {
+  approvedMappings?: Record<string, string[]>;
+  keyMapperAliases?: string[];
+};
+
+function normalizedHeader(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function findSourceHeader(
+  headers: string[],
+  aliases: string[],
+): string | undefined {
+  // Use the same priority as mapRow: approved aliases in order, with normalized
+  // matching against the actual column names in the uploaded spreadsheet.
+  const available = new Map(
+    headers.filter(Boolean).map((header) => [normalizedHeader(header), header]),
+  );
+  for (const alias of aliases) {
+    const match = available.get(normalizedHeader(alias));
+    if (match) return match;
+  }
+  return undefined;
+}
+
+export function rowsWithPolicyNumber(
+  table: ParsedTable,
+  sources: PolicyColumnSources = {},
+): SourceTableRow[] {
+  const approvedPolicyMapping = Object.entries(
+    sources.approvedMappings ?? {},
+  ).find(([targetField]) => normalizedHeader(targetField) === "policynumber");
+  const approvedAliases = approvedPolicyMapping?.[1] ?? [];
+
+  let policyHeader = findSourceHeader(table.headers, approvedAliases);
+  if (approvedAliases.length > 0 && !policyHeader) {
+    throw new Error(
+      `Approved Policy Number column was not found in sheet "${table.sheetName}". Review the file mapping.`,
+    );
+  }
+
+  // Prefer the canonical header over a global Key Mapper alias when neither
+  // was explicitly selected in this company's approved mapping.
+  policyHeader ??= findSourceHeader(table.headers, [
+    "Policy Number",
+    "Policy No",
+  ]);
+  if (!policyHeader) {
+    const aliases = new Set(
+      (sources.keyMapperAliases ?? []).map(normalizedHeader),
+    );
+    const matches = table.headers.filter((header) =>
+      aliases.has(normalizedHeader(header)),
+    );
+    if (matches.length > 1) {
+      throw new Error(
+        `Multiple Policy Number aliases found (${matches.join(", ")}). Approve the correct source column in Key Mapping Review.`,
+      );
+    }
+    policyHeader = matches[0];
+  }
+
+  // Other document types without a policy identifier retain their behavior.
   if (!policyHeader) return table.rows;
 
   return table.rows.filter(
@@ -36,37 +98,55 @@ export function rowsWithPolicyNumber(table: ParsedTable): SourceTableRow[] {
 }
 
 export function isPresent(value: unknown): boolean {
-  return value !== null && value !== undefined &&
-    (typeof value !== "string" || value.trim() !== "");
+  return (
+    value !== null &&
+    value !== undefined &&
+    (typeof value !== "string" || value.trim() !== "")
+  );
 }
 
 export function sourceRowType(
   values: unknown[],
   stopAtLabels: string[] = [],
 ): SourceRowType {
-  const populated = values.filter(isPresent).map((value) => String(value).trim());
+  const populated = values
+    .filter(isPresent)
+    .map((value) => String(value).trim());
   const first = populated[0]?.toLowerCase() ?? "";
   if (/^grand\s+total\b/.test(first)) return "grand_total";
   if (/\b(?:sub\s*total|total)\s*:?$/i.test(first)) return "subtotal";
   const stop = new Set(stopAtLabels.map((label) => label.trim().toLowerCase()));
-  if (populated.some((value) => stop.has(value.toLowerCase()))) return "subtotal";
+  if (populated.some((value) => stop.has(value.toLowerCase())))
+    return "subtotal";
   return "detail";
 }
 
-const HEADER_WORDS = /\b(?:invoice|number|date|amount|taxable|cgst|sgst|igst|input|rcm|premium|brokerage|policy|insured|office|code|endorsement|percentage|name|type|expiry|inception|total|gstin)\b/i;
+const HEADER_WORDS =
+  /\b(?:invoice|number|date|amount|taxable|cgst|sgst|igst|input|rcm|premium|brokerage|policy|insured|office|code|endorsement|percentage|name|type|expiry|inception|total|gstin)\b/i;
 
 /** A different header signals the beginning of a second table; don't import it. */
-export function looksLikeTableHeader(values: unknown[], currentHeaders: string[]): boolean {
+export function looksLikeTableHeader(
+  values: unknown[],
+  currentHeaders: string[],
+): boolean {
   const nonempty = values.filter(isPresent);
   if (nonempty.length < 3) return false;
-  if (!nonempty.every((value) => typeof value === "string" && /[a-z]/i.test(value))) {
+  if (
+    !nonempty.every(
+      (value) => typeof value === "string" && /[a-z]/i.test(value),
+    )
+  ) {
     return false;
   }
   const labels = nonempty.map((value) => String(value).trim());
-  if (new Set(labels.map((value) => value.toLowerCase())).size !== labels.length) {
+  if (
+    new Set(labels.map((value) => value.toLowerCase())).size !== labels.length
+  ) {
     return false;
   }
-  const current = new Set(currentHeaders.map((value) => value.trim().toLowerCase()));
+  const current = new Set(
+    currentHeaders.map((value) => value.trim().toLowerCase()),
+  );
   if (labels.every((label) => current.has(label.toLowerCase()))) {
     return true; // Repeated page header; avoid importing it as an invoice.
   }
@@ -92,7 +172,13 @@ export function buildFirstTable(
   rows: Array<{ rowNumber: number; values: unknown[] }>,
   stopAtLabels: string[] = [],
 ): ParsedTable {
-  const table: ParsedTable = { sheetName, tableIndex: 0, headerRow, headers, rows: [] };
+  const table: ParsedTable = {
+    sheetName,
+    tableIndex: 0,
+    headerRow,
+    headers,
+    rows: [],
+  };
   const carried = new Map<string, unknown>();
 
   for (const source of rows) {
@@ -104,8 +190,11 @@ export function buildFirstTable(
 
     // Ignore isolated page numbers/report section labels.
     const populated = values.filter(isPresent);
-    if (populated.length === 1 &&
-        !/\b(?:total|subtotal)\b/i.test(String(populated[0]))) continue;
+    if (
+      populated.length === 1 &&
+      !/\b(?:total|subtotal)\b/i.test(String(populated[0]))
+    )
+      continue;
 
     const rawData: Record<string, unknown> = {};
     headers.forEach((header, index) => {
@@ -127,7 +216,12 @@ export function buildFirstTable(
       carried.clear(); // New invoice group starts after a subtotal.
     }
 
-    table.rows.push({ rowNumber: source.rowNumber, rowType, rawData, effectiveData });
+    table.rows.push({
+      rowNumber: source.rowNumber,
+      rowType,
+      rawData,
+      effectiveData,
+    });
 
     // Include the grand total in the saved table, then stop before table 2.
     if (rowType === "grand_total") break;
