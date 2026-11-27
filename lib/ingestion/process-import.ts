@@ -8,7 +8,7 @@ import { ImportedTable } from "@/models/ImportedTable";
 import { ImportedTableRow } from "@/models/ImportedTableRow";
 import { parseCsvTables } from "@/lib/parsers/csv.parser";
 import { parseExcelTables } from "@/lib/parsers/excel.parser";
-import type { ParsedTable } from "@/lib/parsers/table-utils";
+import { rowsWithPolicyNumber, type ParsedTable } from "@/lib/parsers/table-utils";
 import { mapRow, validateRequiredFields } from "@/lib/mapping/mapping-engine";
 import { normalizeValues } from "@/lib/validation/normalize-values";
 import { validateNormalizedRecord } from "@/lib/validation/schema-registry";
@@ -151,6 +151,10 @@ export async function processBufferImport(input: {
     throw new Error("Could not find the table matching the approved mapping");
 
   for (const table of tables) {
+    // For policy reports, omit subtotal/grand-total rows and lines without a
+    // Policy Number, while keeping all original columns in each retained row.
+    // Other report formats keep the previous behavior.
+    const rowsToStore = rowsWithPolicyNumber(table);
     const stored = await ImportedTable.findOneAndUpdate(
       {
         importJobId: job._id,
@@ -163,13 +167,13 @@ export async function processBufferImport(input: {
           documentType: input.documentType.toLowerCase(),
           headerRow: table.headerRow,
           headers: table.headers,
-          rowCount: table.rows.length,
+          rowCount: rowsToStore.length,
         },
       },
       { new: true, upsert: true },
     );
 
-    const rawOperations = table.rows.map((row) => ({
+    const rawOperations = rowsToStore.map((row) => ({
       updateOne: {
         filter: {
           importJobId: job._id,
@@ -189,12 +193,20 @@ export async function processBufferImport(input: {
       },
     }));
     await writeInBatches(ImportedTableRow, rawOperations);
+    // Reprocessing an existing job must not leave previously stored totals or
+    // blank-policy rows behind in the table viewer.
+    await ImportedTableRow.deleteMany({
+      importJobId: job._id,
+      sheetName: table.sheetName,
+      tableIndex: table.tableIndex,
+      rowNumber: { $nin: rowsToStore.map((row) => row.rowNumber) },
+    });
     savedTableRows += rawOperations.length;
 
     if (table !== mappedTable) continue;
 
     const normalizedOperations: any[] = [];
-    for (const row of table.rows) {
+    for (const row of rowsToStore) {
       if (row.rowType !== "detail") continue;
       totalRows++;
       try {
@@ -250,6 +262,13 @@ export async function processBufferImport(input: {
       }
     }
     await writeInBatches(ImportedRecord, normalizedOperations);
+    // Remove policy-empty records imported by older runs of the same job.
+    await ImportedRecord.deleteMany({
+      importJobId: job._id,
+      "source.sheetName": table.sheetName,
+      "source.tableIndex": table.tableIndex,
+      "source.rowNumber": { $nin: rowsToStore.map((row) => row.rowNumber) },
+    });
     successfulRows += normalizedOperations.length;
   }
 

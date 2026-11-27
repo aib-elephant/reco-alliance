@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildFirstTable } from '../lib/parsers/table-utils.ts';
+import { buildFirstTable, rowsWithPolicyNumber } from '../lib/parsers/table-utils.ts';
 
 const headers = [
   'Invoice Number', 'Invoice Date', 'Office Code', 'Policy Number',
@@ -56,4 +56,39 @@ test('a subtotal resets invoice number carry-down', () => {
   ];
   const table = buildFirstTable('Sheet1', 8, headers, rows);
   assert.equal(table.rows[2].effectiveData['Invoice Number'], null);
+});
+
+
+test('policy report stores all populated-policy details and skips totals or blank policies', () => {
+  const rows = [
+    { rowNumber: 9, values: detail('INV-A', 'POL-A', 10) },
+    { rowNumber: 10, values: ['INV-A Total'] },
+    { rowNumber: 11, values: detail('INV-B', 'POL-B', 20) },
+    { rowNumber: 12, values: [null, null, null, '  ', null, '44', 'Unknown Policy Holder'] },
+    { rowNumber: 13, values: [null, null, null, 'POL-C', null, '44', 'Another Policy Holder'] },
+    { rowNumber: 14, values: ['Grand Total'] },
+    { rowNumber: 15, values: ['Invoice Number', 'Invoice Date', 'Taxable Amount', 'CGST Input'] },
+  ];
+  const table = buildFirstTable('Sheet1', 8, headers, rows);
+  assert.deepEqual(rowsWithPolicyNumber(table).map((row) => row.rowNumber), [9, 11, 13]);
+  assert.deepEqual(rowsWithPolicyNumber(table).map((row) => row.rawData['Policy Number']),
+    ['POL-A', 'POL-B', 'POL-C']);
+  assert.equal(Object.keys(rowsWithPolicyNumber(table)[0].rawData).length, 14);
+});
+
+test('other document layouts without Policy Number are unchanged', () => {
+  const table = buildFirstTable('Sheet1', 1, ['Invoice Number', 'Amount'], [
+    { rowNumber: 2, values: ['INV-A', 100] },
+    { rowNumber: 3, values: ['Grand Total', 100] },
+  ]);
+  assert.deepEqual(rowsWithPolicyNumber(table).map((row) => row.rowNumber), [2, 3]);
+});
+
+test('recognizes alternate Policy No header', () => {
+  const table = buildFirstTable('Sheet1', 1, ['Policy No.', 'Premium'], [
+    { rowNumber: 2, values: ['PN-100', 100] },
+    { rowNumber: 3, values: [null, 200] },
+    { rowNumber: 4, values: ['Grand Total', 300] },
+  ]);
+  assert.deepEqual(rowsWithPolicyNumber(table).map((row) => row.rowNumber), [2]);
 });

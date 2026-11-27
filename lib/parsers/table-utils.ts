@@ -16,6 +16,25 @@ export type ParsedTable = {
   rows: SourceTableRow[];
 };
 
+/**
+ * A report with a Policy Number column can contain subtotal rows and empty
+ * separator rows. Keep only actual policy details in imported/stored rows.
+ *
+ * Other report layouts have no change in behavior. The original first-table
+ * boundary (Grand Total / next header) is detected BEFORE this filter.
+ */
+export function rowsWithPolicyNumber(table: ParsedTable): SourceTableRow[] {
+  const policyHeader = table.headers.find((header) => {
+    const key = header.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return key === "policynumber" || key === "policyno";
+  });
+  if (!policyHeader) return table.rows;
+
+  return table.rows.filter(
+    (row) => row.rowType === "detail" && isPresent(row.rawData[policyHeader]),
+  );
+}
+
 export function isPresent(value: unknown): boolean {
   return value !== null && value !== undefined &&
     (typeof value !== "string" || value.trim() !== "");
