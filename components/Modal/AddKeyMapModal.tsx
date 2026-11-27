@@ -3,32 +3,36 @@ import { useState } from "react";
 import Modal from ".";
 import { LuCircleX } from "react-icons/lu";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CreateMappedField } from "@/lib/utils/types";
 import { createField } from "@/lib/mutations/mappedKeyMutation";
 import toast from "react-hot-toast";
+import { Company } from "@/lib/utils/types";
+import Select from "../Ui/Select";
+import Input from "../Ui/Input";
 
 interface AFProps {
   show: boolean;
   onClose: () => void;
+  companies: Company[];
 }
 
-const DEFAULT_FIELD = {
-  source_field: "",
-  mapped_columns: "",
-  deleted_keys: "",
-};
-
-const AddFieldModal = ({ show, onClose }: AFProps) => {
+const AddFieldModal = ({ show, onClose, companies }: AFProps) => {
   const queryClient = useQueryClient();
 
-  const [formData, setFormData] = useState(DEFAULT_FIELD);
+  const [sourceField, setSourceField] = useState("");
+  const [fieldKey, setFieldKey] = useState("");
+  const [selectedCompany, setSelectedCompany] = useState<{
+    label: string;
+    value: string;
+  } | null>(null);
 
   const addKeyMutation = useMutation({
     mutationFn: createField,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["mappedKeys"] });
       toast.success("Field created successfully!");
-      setFormData(DEFAULT_FIELD);
+      setSourceField("");
+      setFieldKey("");
+      setSelectedCompany(null);
       onClose();
     },
     onError: (error: any) => {
@@ -40,26 +44,16 @@ const AddFieldModal = ({ show, onClose }: AFProps) => {
     },
   });
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
-  };
-
   const handleMappedKey = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!formData.source_field.trim()) {
+    if (!sourceField.trim()) {
       toast.error("Source field is required.");
       return;
     }
-    // if (companies && companies.some((c) => c.slug === formData.slug)) {
-    //   toast.error("A company with this slug already exists.");
-    //   return;
-    // }
-
     const payload = {
-      ...formData,
-      mapped_columns: formData.mapped_columns.split(",").map((v) => v.trim()),
+      source_field: sourceField,
+      mapped_columns: [{ key: fieldKey, companyId: selectedCompany?.value! }],
     };
 
     addKeyMutation.mutate(payload);
@@ -93,32 +87,35 @@ const AddFieldModal = ({ show, onClose }: AFProps) => {
             onSubmit={handleMappedKey}
           >
             <div className="md:col-span-12">
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                Source Field <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="text"
-                name="source_field"
-                placeholder="e.g. Acme Corporation"
-                value={formData.source_field}
-                onChange={handleChange}
+              <Input
+                label="Source Field"
+                value={sourceField}
+                onChange={(e) => setSourceField(e.target.value)}
                 required
-                className="w-full px-3.5 py-2.5 text-sm text-slate-900 bg-white border border-slate-300 rounded-lg shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-colors"
               />
             </div>
 
             <div className="md:col-span-12">
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                Sender Emails <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="text"
-                name="mapped_columns"
-                placeholder="e.g. example, example 1"
-                value={formData.mapped_columns}
-                onChange={handleChange}
+              <Select
+                label="Company"
+                options={
+                  companies.map((c) => ({
+                    label: c.name,
+                    value: c._id,
+                  })) as { label: string; value: string }[]
+                }
+                value={selectedCompany}
+                onSelect={(val) => setSelectedCompany(val)}
                 required
-                className="w-full px-3.5 py-2.5 text-sm text-slate-900 bg-white border border-slate-300 rounded-lg shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-colors"
+              />
+            </div>
+
+            <div className="md:col-span-12">
+              <Input
+                label="Mapped Key"
+                value={fieldKey}
+                onChange={(e) => setFieldKey(e.target.value)}
+                required
               />
             </div>
 

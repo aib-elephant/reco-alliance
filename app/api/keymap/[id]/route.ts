@@ -17,10 +17,10 @@ export async function PUT(req: Request, { params }: Params) {
 
     const body = await req.json();
 
-    const { key } = body;
+    const { key, companyId } = body;
 
     const updatedField = await MappedKey.findByIdAndUpdate(id, {
-      $push: { mapped_columns: key },
+      $push: { mapped_columns: { key, companyId } },
     });
     return NextResponse.json(
       { success: true, message: "Key added successfully!", data: updatedField },
@@ -42,11 +42,11 @@ export async function DELETE(req: Request, { params }: Params) {
 
     const body = await req.json();
 
-    const { key } = body;
+    const { key, companyId } = body;
 
     const deletedKey = await MappedKey.findByIdAndUpdate(id, {
-      $pull: { mapped_columns: key },
-      $push: { deleted_keys: key },
+      $pull: { mapped_columns: { key, companyId } },
+      $push: { deleted_keys: { key, companyId } },
     });
 
     return NextResponse.json(

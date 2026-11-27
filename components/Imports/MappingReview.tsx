@@ -69,7 +69,7 @@ export default function MappingReview({
 
     for (const { mapped_columns, source_field } of mappedKeys?.data ?? []) {
       for (const col of mapped_columns) {
-        mapped.set(normalize(col), source_field);
+        mapped.set(normalize(col.key), source_field);
       }
     }
 

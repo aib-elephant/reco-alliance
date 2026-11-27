@@ -28,15 +28,15 @@ export type Job = {
 
 export type CreateMappedField = {
   source_field: string;
-  mapped_columns: string[];
-  deleted_keys: string;
+  mapped_columns: { key: string; companyId: string }[];
+  // deleted_keys: { key: string; companyId: string };
 };
 
 export type MappedField = {
   _id: string;
   source_field: string;
-  mapped_columns: string[];
-  deleted_keys: string[];
+  mapped_columns: { key: string; companyId: string }[];
+  deleted_keys: { key: string; companyId: string }[];
   createAt: Date;
   updatedAt: Date;
 };

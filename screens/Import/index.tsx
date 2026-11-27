@@ -137,7 +137,7 @@ const ImportScreen = () => {
         </div>
       </header>
 
-      <section className="bg-white rounded-xl p-5 sm:p-6 border border-slate-200/90 shadow-sm overflow-hidden">
+      <section className="bg-white rounded-xl p-5 sm:p-6 border border-slate-200/90 overflow-hidden">
         <div>
           <form
             onSubmit={upload}
@@ -200,7 +200,7 @@ const ImportScreen = () => {
 
       <section
         aria-labelledby="companies-list-heading"
-        className="bg-white rounded-xl border border-slate-200/90 shadow-sm overflow-hidden"
+        className="bg-white rounded-xl border border-slate-200/90 overflow-hidden"
       >
         <div className="p-4 sm:px-6 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white">
           <div className="flex items-center gap-2.5">

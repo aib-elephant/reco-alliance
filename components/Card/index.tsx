@@ -13,7 +13,7 @@ const Card = ({ children, classname, ...restProps }: cardProps) => {
   return (
     <section
       className={twMerge(
-        "bg-white rounded-xl p-5 sm:p-6 border border-slate-200/90 shadow-sm",
+        "bg-white rounded-xl p-5 sm:p-6 border border-slate-200/90",
         classname,
       )}
       {...restProps}

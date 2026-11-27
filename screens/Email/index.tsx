@@ -64,7 +64,7 @@ const EmailPageScreen = () => {
   }
 
   return (
-    <div className="space-y-7 py-6">
+    <div className="space-y-7">
       <PageHeading
         name="Automated Email Extraction"
         subtitle="Connect a mailbox, import CSV/XLSX attachments, and review new
